@@ -19,7 +19,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.get('/api/greet', (req, res) => {
   const name = typeof req.query.name === 'string' ? req.query.name.slice(0, 50) : 'world';
-  res.type('text/plain').send(`Hello, ${name}`);
+  res.json({ message: `Hello, ${name}` });
 });
 
 module.exports = app;

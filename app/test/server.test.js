@@ -20,9 +20,10 @@ test('health returns ok', async () => {
   assert.deepStrictEqual(await res.json(), { status: 'ok' });
 });
 
-test('greet answers as plain text', async () => {
+test('greet answers as JSON, never as HTML', async () => {
   const res = await fetch(`${base}/api/greet?name=<b>x</b>`);
-  assert.match(res.headers.get('content-type'), /text\/plain/);
+  assert.match(res.headers.get('content-type'), /application\/json/);
+  assert.deepStrictEqual(await res.json(), { message: 'Hello, <b>x</b>' });
 });
 
 test('security headers are set', async () => {
