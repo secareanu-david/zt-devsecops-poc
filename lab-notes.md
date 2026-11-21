@@ -8,10 +8,10 @@
 | Subscription ID | eb726bdd-8dae-4521-9746-083042e7d3c5 |
 | Tenant ID | 1211f716-5b0b-4bfe-b7c9-8e0045b37e3e |
 | My role on the subscription | Owner |
-| Azure for Students credit expires | <YYYY-MM-DD> |
-| Allowed regions | <paste the list from Policy, Assignments> |
-| Chosen REGION | <REGION> |
-| SUFFIX | <SUFFIX> |
+| Azure for Students credit expires | 20/11/2027 |
+| Allowed regions | ["switzerlandnorth","austriaeast","swedencentral","belgiumcentral","spaincentral"] |
+| Chosen REGION | swedencentral |
+| SUFFIX | ds2003 |
 
 ### Pinned scanner images
 
@@ -28,6 +28,7 @@
 - 2026-11-21: Pre-commit hook scans staged changes through Betterleaks stdin mode, because rc.8's git command has no staged-only option.
 - 2026-11-21: Trivy 0.76.2, well past the compromised 0.69.4 release.
 - 2026-11-21: All tools run in WSL2 Ubuntu 24.04; project files live under ~/projects, not /mnt/c.
+- 2026-11-21: Node 24 LTS instead of 22: 22's support ends 2027-04-30, before submission
 
 ## Errors and fixes
 
