@@ -72,11 +72,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.ref }}
         run: |
-          COUNT=$(gh api --paginate \
+          gh api --paginate \
             "repos/$GITHUB_REPOSITORY/code-scanning/alerts?ref=$REF&state=open&tool_name=CodeQL&per_page=100" \
-            --jq '[.[] | select(.rule.security_severity_level == "high" or .rule.security_severity_level == "critical")] | length' \
-            | awk '{s+=$1} END {print s+0}')
+            --jq '.[] | select(.rule.security_severity_level == "high" or .rule.security_severity_level == "critical")
+                  | "\(.rule.security_severity_level)  \(.rule.id)  \(.most_recent_instance.location.path):\(.most_recent_instance.location.start_line)"' \
+            > codeql-blocking.txt
+          COUNT=$(wc -l < codeql-blocking.txt)
           echo "CodeQL high/critical alerts: $COUNT" >> "$GITHUB_STEP_SUMMARY"
+          tee -a "$GITHUB_STEP_SUMMARY" < codeql-blocking.txt
           test "$COUNT" -eq 0
 
   gate-sca:
