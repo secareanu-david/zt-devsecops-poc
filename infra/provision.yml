@@ -40,3 +40,6 @@
         https_only: true
         minimum_tls_version: TLS1_2
         allow_blob_public_access: false
+        network_acls:
+                  default_action: Deny
+                  bypass: AzureServices
