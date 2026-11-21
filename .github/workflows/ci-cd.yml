@@ -1,0 +1,220 @@
+name: ci-cd
+run-name: "ci-cd L${{ inputs.gate_level || '4' }} (${{ github.event_name }})"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      gate_level:
+        description: "0 = no gates, 1 = +secrets, 2 = +SAST, 3 = +SCA, 4 = all gates"
+        type: choice
+        options: ["0", "1", "2", "3", "4"]
+        default: "4"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BETTERLEAKS_IMAGE: ghcr.io/betterleaks/betterleaks@sha256:c4955cc2a56492588a319e65577bc1bb4435704678aed8b1c4d78ad803476544
+  KICS_IMAGE: checkmarx/kics@sha256:49ccc54b6ae7f5d5fc95e96f8f95c18c57f3bba047ab611a03d80792bdff6757
+  TRIVY_IMAGE: aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+
+jobs:
+  gate-secrets:
+    if: ${{ (inputs.gate_level || '4') >= '1' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Betterleaks over the full Git history
+        run: |
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/repo" -w /repo \
+            "$BETTERLEAKS_IMAGE" git /repo --redact --no-banner --output /repo/betterleaks.json || true
+          jq -e '.scan.state == "complete"' betterleaks.json
+          FOUND=$(jq '.scan.num_findings' betterleaks.json)
+          echo "Betterleaks findings: $FOUND" >> "$GITHUB_STEP_SUMMARY"
+          test "$FOUND" -eq 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: betterleaks-report
+          path: betterleaks.json
+          if-no-files-found: ignore
+
+  gate-sast:
+    if: ${{ (inputs.gate_level || '4') >= '2' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4
+        with:
+          category: /language:javascript-typescript
+      - name: Fail on open high or critical CodeQL alerts for this ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/merge', github.event.number) || github.ref }}
+        run: |
+          COUNT=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/code-scanning/alerts?ref=$REF&state=open&tool_name=CodeQL&per_page=100" \
+            --jq '[.[] | select(.rule.security_severity_level == "high" or .rule.security_severity_level == "critical")] | length' \
+            | awk '{s+=$1} END {print s+0}')
+          echo "CodeQL high/critical alerts: $COUNT" >> "$GITHUB_STEP_SUMMARY"
+          test "$COUNT" -eq 0
+
+  gate-sca:
+    if: ${{ (inputs.gate_level || '4') >= '3' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+      - name: npm audit (high and critical)
+        working-directory: app
+        run: npm audit --audit-level=high --omit=dev
+      - name: Trivy filesystem scan (high and critical)
+        if: ${{ !cancelled() }}
+        run: |
+          docker run --rm -v "$PWD:/src" "$TRIVY_IMAGE" fs /src/app \
+            --scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
+            --format json --output /src/trivy.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: trivy-report
+          path: trivy.json
+          if-no-files-found: ignore
+
+  gate-iac:
+    if: ${{ (inputs.gate_level || '4') >= '4' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: KICS on the Ansible playbooks (gate on HIGH)
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo "$KICS_IMAGE" scan \
+            -p infra -o kics-out --report-formats json,sarif \
+            --type Ansible --fail-on high --no-progress
+      - name: Checkov on the same files (report only, for comparison)
+        if: ${{ !cancelled() }}
+        run: |
+          pipx install checkov==3.4.6
+          checkov -d infra --framework ansible --soft-fail -o json > checkov.json || true
+      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4
+        if: ${{ !cancelled() }}
+        with:
+          sarif_file: kics-out/results.sarif
+          category: kics
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: iac-reports
+          path: |
+            kics-out/
+            checkov.json
+          if-no-files-found: ignore
+
+  build-and-test:
+    needs: [gate-secrets, gate-sast, gate-sca, gate-iac]
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install and test
+        working-directory: app
+        run: npm ci && npm test
+      - name: Package production files
+        working-directory: app
+        run: |
+          npm ci --omit=dev
+          zip -qr ../app.zip . -x "test/*"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        if: ${{ github.event_name != 'pull_request' }}
+        with:
+          subject-path: app.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: app-zip
+          path: app.zip
+          retention-days: 7
+
+  deploy:
+    needs: build-and-test
+    if: ${{ !cancelled() && !failure() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SUFFIX: ${{ vars.SUFFIX }}
+      ANSIBLE_AZURE_AUTH_SOURCE: cli
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: app-zip
+      - name: Verify the zip was built by this repository's pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh attestation verify app.zip --repo "$GITHUB_REPOSITORY"
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Install Ansible
+        run: ./scripts/install-ansible.sh
+      - name: Enforce desired state with Ansible
+        working-directory: infra
+        run: ansible-playbook provision.yml
+      - name: Deploy the verified zip
+        run: |
+          az webapp config appsettings set -g rg-zt-app -n "app-zt-$SUFFIX" \
+            --settings BUILD_SHA="$GITHUB_SHA" --output none
+          az webapp deploy -g rg-zt-app -n "app-zt-$SUFFIX" --src-path app.zip --type zip
+      - name: Smoke test
+        run: |
+          for i in $(seq 1 12); do
+            curl -fsS "https://app-zt-$SUFFIX.azurewebsites.net/health" && exit 0
+            sleep 10
+          done
+          exit 1
