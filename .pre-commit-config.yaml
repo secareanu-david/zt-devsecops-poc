@@ -1,0 +1,13 @@
+repos:
+  - repo: local
+    hooks:
+      - id: betterleaks-staged
+        name: Betterleaks on staged changes
+        language: system
+        pass_filenames: false
+        entry: >-
+          bash -c 'docker info > /dev/null 2>&1 || { echo "Docker is not running: start Docker Desktop and commit again"; exit 1; };
+          git diff --cached -U0 --no-color
+          | docker run --rm -i ghcr.io/betterleaks/betterleaks@sha256:c4955cc2a56492588a319e65577bc1bb4435704678aed8b1c4d78ad803476544 stdin --redact --no-banner --output -
+          | jq -e ".scan.num_findings == 0" > /dev/null
+          || { echo "Betterleaks found a possible secret in your staged changes"; exit 1; }'
