@@ -1,0 +1,42 @@
+- name: Desired state for the Zero Trust POC
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: App Service plan, Linux, Free tier
+      azure.azcollection.azure_rm_appserviceplan:
+        resource_group: "{{ resource_group }}"
+        name: "{{ plan_name }}"
+        location: "{{ location }}"
+        sku: F1
+        is_linux: true
+
+    - name: Web app with hardened transport settings
+      azure.azcollection.azure_rm_webapp:
+        resource_group: "{{ resource_group }}"
+        name: "{{ webapp_name }}"
+        location: "{{ location }}"
+        plan:
+          resource_group: "{{ resource_group }}"
+          name: "{{ plan_name }}"
+        frameworks:
+          - name: node
+            version: "{{ node_version }}"
+        https_only: true
+        min_tls_version: "1.2"
+        ftps_state: Disabled
+        http20_enabled: true
+        app_settings:
+          SCM_DO_BUILD_DURING_DEPLOYMENT: "false"
+
+    - name: Storage account with hardened settings
+      azure.azcollection.azure_rm_storageaccount:
+        resource_group: "{{ resource_group }}"
+        name: "{{ storage_name }}"
+        location: "{{ location }}"
+        account_type: Standard_LRS
+        kind: StorageV2
+        https_only: true
+        minimum_tls_version: TLS1_2
+        allow_blob_public_access: false

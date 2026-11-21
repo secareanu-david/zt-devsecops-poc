@@ -1,0 +1,7 @@
+suffix: "ds2003"
+location: "swedencentral"
+resource_group: rg-zt-app
+plan_name: "asp-zt-{{ suffix }}"
+webapp_name: "app-zt-{{ suffix }}"
+storage_name: "stzt{{ suffix }}"
+node_version: "24-lts"
