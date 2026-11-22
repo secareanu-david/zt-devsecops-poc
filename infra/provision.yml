@@ -27,6 +27,8 @@
         min_tls_version: "1.2"
         ftps_state: Disabled
         http20_enabled: true
+        identity:
+          type: SystemAssigned
         app_settings:
           SCM_DO_BUILD_DURING_DEPLOYMENT: "false"
 
@@ -40,6 +42,7 @@
         https_only: true
         minimum_tls_version: TLS1_2
         allow_blob_public_access: false
+        allow_shared_key_access: false
         network_acls:
                   default_action: Deny
                   bypass: AzureServices
