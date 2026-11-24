@@ -1,0 +1,6 @@
+{
+  "name": "zt-remediation-relay",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "dependencies": { "@azure/functions": "^4.0.0" }
+}

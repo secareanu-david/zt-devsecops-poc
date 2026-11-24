@@ -1,0 +1,67 @@
+name: remediate
+
+on:
+  repository_dispatch:
+    types: [drift-detected]
+  schedule:
+    - cron: "17 */6 * * *"   # safety net every 6 hours
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remediation
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    runs-on: ubuntu-24.04
+    environment: remediation
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ANSIBLE_AZURE_AUTH_SOURCE: cli
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Install Ansible
+        run: ./scripts/install-ansible.sh
+      - name: Detect, remediate and verify
+        working-directory: infra
+        env:
+          EVENT_TIME: ${{ github.event.client_payload.eventTime }}
+          RESOURCE: ${{ github.event.client_payload.resource }}
+        run: |
+          STARTED=$(date -u +%FT%TZ)
+          ansible-playbook provision.yml --check --diff | tee check.log
+          CHECKED=$(date -u +%FT%TZ)
+          CHANGED=$(grep -oE 'changed=[0-9]+' check.log | tail -n1 | cut -d= -f2)
+          REMEDIATED=""
+          if [ "$CHANGED" != "0" ]; then
+            ansible-playbook provision.yml | tee apply.log
+            ansible-playbook provision.yml --check | tee verify.log
+            grep -q 'changed=0' verify.log
+            REMEDIATED=$(date -u +%FT%TZ)
+          fi
+          jq -n --arg trigger "$GITHUB_EVENT_NAME" --arg event_time "${EVENT_TIME:-}" \
+            --arg resource "${RESOURCE:-}" --arg started "$STARTED" --arg checked "$CHECKED" \
+            --arg remediated "$REMEDIATED" --argjson drift_tasks "$CHANGED" \
+            '{trigger:$trigger, event_time:$event_time, resource:$resource,
+              workflow_started:$started, check_finished:$checked,
+              remediated:$remediated, drift_tasks:$drift_tasks}' > timings.json
+          cat timings.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: remediation-evidence
+          path: |
+            infra/*.log
+            infra/timings.json

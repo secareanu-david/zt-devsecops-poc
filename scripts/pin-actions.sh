@@ -2,7 +2,7 @@
 # Rewrites "uses: owner/repo[/path]@vX" to "uses: owner/repo[/path]@<sha> # vX"
 set -euo pipefail
 for f in .github/workflows/*.yml; do
-  grep -oE 'uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@v[0-9][A-Za-z0-9_.-]*$' "$f" | sort -u |
+  { grep -oE 'uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@v[0-9][A-Za-z0-9_.-]*$' "$f" || true; } | sort -u |
   while read -r _ ref; do
     action="${ref%@*}"; tag="${ref#*@}"
     repo=$(echo "$action" | cut -d/ -f1-2)
