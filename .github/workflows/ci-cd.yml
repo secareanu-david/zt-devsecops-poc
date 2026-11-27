@@ -85,16 +85,38 @@ jobs:
   gate-sca:
     if: ${{ (inputs.gate_level || '4') >= '3' }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.PACKAGES_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Feed credentials
+        env:
+          ADO_ORG: ${{ vars.ADO_ORG }}
+          ADO_PROJECT: ${{ vars.ADO_PROJECT }}
+          ADO_FEED: ${{ vars.ADO_FEED }}
+        run: ./scripts/npm-feed-auth.sh
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
       - name: npm audit (high and critical)
         working-directory: app
-        run: npm audit --audit-level=high --omit=dev
+        run: npm audit --audit-level=high --omit=dev --registry=https://registry.npmjs.org
+      - name: Every dependency must resolve from our feed
+        if: ${{ !cancelled() }}
+        env:
+          ADO_ORG: ${{ vars.ADO_ORG }}
+        run: |
+          OUTSIDE=$(jq -r '.packages[]?.resolved // empty' app/package-lock.json \
+                    | grep -v "^https://pkgs.dev.azure.com/${ADO_ORG}/" || true)
+          if [ -n "$OUTSIDE" ]; then echo "Resolved outside the feed:"; echo "$OUTSIDE"; exit 1; fi
       - name: Trivy filesystem scan (high and critical)
         if: ${{ !cancelled() }}
         run: |
@@ -150,10 +172,23 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    outputs:
+      pkg_version: ${{ steps.version.outputs.v }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.PACKAGES_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Feed credentials
+        env:
+          ADO_ORG: ${{ vars.ADO_ORG }}
+          ADO_PROJECT: ${{ vars.ADO_PROJECT }}
+          ADO_FEED: ${{ vars.ADO_FEED }}
+        run: ./scripts/npm-feed-auth.sh
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
@@ -162,6 +197,15 @@ jobs:
       - name: Install and test
         working-directory: app
         run: npm ci && npm test
+      - name: Version
+        id: version
+        run: echo "v=1.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Publish the app package to the feed (main only)
+        if: ${{ github.event_name != 'pull_request' }}
+        working-directory: app
+        env:
+          V: ${{ steps.version.outputs.v }}
+        run: npm version "$V" --no-git-tag-version && npm publish
       - name: Package production files
         working-directory: app
         run: |
@@ -221,3 +265,26 @@ jobs:
             sleep 10
           done
           exit 1
+
+  promote:
+    needs: [build-and-test, deploy]
+    if: ${{ !cancelled() && !failure() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.PACKAGES_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Promote the deployed version to @Release
+        env:
+          V: ${{ needs.build-and-test.outputs.pkg_version }}
+          ADO_ORG: ${{ vars.ADO_ORG }}
+        run: |
+          TOKEN=$(az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv)
+          curl -fsS -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            -d '{"views":{"op":"add","path":"/views/-","value":"Release"}}' \
+            "https://pkgs.dev.azure.com/${ADO_ORG}/zt-devsecops/_apis/packaging/feeds/zt-npm/npm/zt-devsecops-app/versions/${V}?api-version=7.1"
